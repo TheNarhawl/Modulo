@@ -58,6 +58,10 @@ export class TransportScheduler {
   private scheduledEventId: number | null = null;
   private isPlaying = false;
 
+  // Cached compiled voices for the currently playing bar (eliminates per-step recalculation)
+  private cachedBarVoices: CompiledVoice[] | null = null;
+  private cachedBarBlockName = '';
+
   constructor(
     private readonly audio: AudioEngine,
     private readonly callbacks: SchedulerCallbacks
@@ -74,6 +78,7 @@ export class TransportScheduler {
   public loadAST(newAst: ProgramAST): void {
     this.ast = newAst;
     this.queue = this.buildExpandedQueue(newAst);
+    this.cachedBarVoices = null; // Invalidate bar cache so hot-reload takes effect immediately
 
     Tone.Transport.bpm.value = newAst.playback.tempo;
     Tone.Transport.swing = newAst.playback.swing;
@@ -91,6 +96,7 @@ export class TransportScheduler {
     this.currentQueueIdx = 0;
     this.currentStepIdx = 0;
     this.cellularGeneration = 0;
+    this.cachedBarVoices = null;
 
     if (this.scheduledEventId !== null) {
       Tone.Transport.clear(this.scheduledEventId);
@@ -106,11 +112,12 @@ export class TransportScheduler {
     }
 
     this.scheduleNextTick(0);
-    Tone.Transport.start('+0.03');
+    Tone.Transport.start('+0.04');
   }
 
   public stop(): void {
     this.isPlaying = false;
+    this.cachedBarVoices = null;
     if (this.scheduledEventId !== null) {
       Tone.Transport.clear(this.scheduledEventId);
       this.scheduledEventId = null;
@@ -229,19 +236,33 @@ export class TransportScheduler {
       }
 
       const tempo = this.ast.playback.tempo;
-      const compiledVoices = this.compileBlockVoices(block, tempo);
+      const isBarStart = this.currentStepIdx === 0;
+
+      // Only compile voices at the start of the bar or after hot-reload
+      if (isBarStart || !this.cachedBarVoices || this.cachedBarBlockName !== blockName) {
+        this.cachedBarVoices = this.compileBlockVoices(block, tempo);
+        this.cachedBarBlockName = blockName;
+      }
+
+      const compiledVoices = this.cachedBarVoices;
       const primaryVoice = compiledVoices[0];
 
       if (this.currentStepIdx >= primaryVoice.steps.length) {
         this.currentStepIdx = 0;
       }
 
-      const isBarStart = this.currentStepIdx === 0;
-
-      // Schedule secondary layers across the bar on their own isolated channel slots (1..N)
+      // Schedule secondary layers at bar start
       if (isBarStart && compiledVoices.length > 1) {
         for (let vIdx = 1; vIdx < compiledVoices.length; vIdx++) {
           const layerVoice = compiledVoices[vIdx];
+          // Configure layer mix once at the start of the bar
+          this.audio.configureSlot(
+            vIdx,
+            layerVoice.gain,
+            layerVoice.pan,
+            layerVoice.fx,
+            audioTime
+          );
           layerVoice.steps.forEach((chord, stepIdx) => {
             if (chord !== null) {
               this.audio.triggerVoice(
@@ -318,6 +339,7 @@ export class TransportScheduler {
         this.currentStepIdx = 0;
         this.cellularGeneration++;
         this.currentQueueIdx++;
+        this.cachedBarVoices = null; // Force fresh compilation for the next bar
 
         if (this.currentQueueIdx >= this.queue.length) {
           if (this.ast.playback.loop) {

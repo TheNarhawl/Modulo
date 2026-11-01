@@ -195,6 +195,19 @@ const scopeCtx = scopeCanvas.getContext('2d')!;
 
 let currentErrorLine: number | null = null;
 
+// Cached DOM references to avoid innerHTML reconstruction on every step
+interface CachedVoiceDOM {
+  counterEl: HTMLSpanElement;
+  cells: HTMLDivElement[];
+  lastActiveIdx: number;
+}
+
+let renderedMatrixSignature = '';
+let cachedVoiceDOMs: CachedVoiceDOM[] = [];
+let renderedQueueSignature = '';
+let cachedQueueItems: HTMLDivElement[] = [];
+let lastQueueActiveIdx = -1;
+
 function logToTerminal(
   message: string,
   type: 'info' | 'success' | 'error' = 'info'
@@ -215,6 +228,11 @@ function logToTerminal(
   row.appendChild(timeSpan);
   row.appendChild(msgSpan);
   terminalConsole.appendChild(row);
+
+  // Keep console log bounded to 100 entries so DOM doesn't grow indefinitely
+  while (terminalConsole.childElementCount > 100 && terminalConsole.firstChild) {
+    terminalConsole.removeChild(terminalConsole.firstChild);
+  }
   terminalConsole.scrollTop = terminalConsole.scrollHeight;
 }
 
@@ -287,16 +305,41 @@ function syncEditorScroll(): void {
   lineNumbers.scrollTop = codeInput.scrollTop;
 }
 
-function renderSequenceQueue(queue: string[], activeIndex: number): void {
-  sequenceVisualizer.innerHTML = '';
-  queue.forEach((blockName, idx) => {
-    const item = document.createElement('div');
-    item.className = `seq-item${idx === activeIndex ? ' active-block' : ''}`;
-    item.innerHTML = `<span>#${idx + 1} ${escapeHtml(blockName)}</span><span>${
-      idx === activeIndex ? 'ACTIVE' : ''
-    }</span>`;
-    sequenceVisualizer.appendChild(item);
-  });
+/**
+ * Updates sequence queue with O(1) class toggling unless the queue structure changed
+ */
+function renderSequenceQueue(queue: string[], activeIndex: number, forceRebuild = false): void {
+  const sig = queue.join(',');
+  if (forceRebuild || sig !== renderedQueueSignature) {
+    renderedQueueSignature = sig;
+    sequenceVisualizer.innerHTML = '';
+    cachedQueueItems = [];
+    lastQueueActiveIdx = -1;
+
+    queue.forEach((blockName, idx) => {
+      const item = document.createElement('div');
+      item.className = 'seq-item';
+      item.innerHTML = `<span>#${idx + 1} ${escapeHtml(blockName)}</span><span class="seq-status"></span>`;
+      sequenceVisualizer.appendChild(item);
+      cachedQueueItems.push(item);
+    });
+  }
+
+  if (lastQueueActiveIdx !== activeIndex) {
+    if (lastQueueActiveIdx >= 0 && cachedQueueItems[lastQueueActiveIdx]) {
+      const prev = cachedQueueItems[lastQueueActiveIdx];
+      prev.classList.remove('active-block');
+      const statusEl = prev.querySelector('.seq-status');
+      if (statusEl) statusEl.textContent = '';
+    }
+    if (activeIndex >= 0 && cachedQueueItems[activeIndex]) {
+      const curr = cachedQueueItems[activeIndex];
+      curr.classList.add('active-block');
+      const statusEl = curr.querySelector('.seq-status');
+      if (statusEl) statusEl.textContent = 'ACTIVE';
+    }
+    lastQueueActiveIdx = activeIndex;
+  }
 }
 
 function renderVoiceBadges(voice: VoiceRuntimeSnapshot): string {
@@ -319,6 +362,11 @@ function renderVoiceBadges(voice: VoiceRuntimeSnapshot): string {
   return badges.join('');
 }
 
+/**
+ * High-performance step matrix renderer:
+ * Only builds DOM elements when the block or generation changes.
+ * On each step, simply toggles '.current-step' on cached DOM nodes.
+ */
 function renderPatternMatrix(snapshot: ActiveStepSnapshot): void {
   statusBpm.textContent = String(snapshot.tempo);
   statusBlock.textContent = snapshot.blockName;
@@ -326,33 +374,76 @@ function renderPatternMatrix(snapshot: ActiveStepSnapshot): void {
   statusStep.textContent = `${snapshot.stepIndex + 1}/${snapshot.totalSteps}`;
   statusGen.textContent = String(snapshot.generation);
 
-  const cardsHtml = snapshot.voices
-    .map((voice, vIdx) => {
-      const cellsHtml = voice.pattern
-        .map((chord, sIdx) => {
-          const classes = ['step-cell'];
-          if (chord !== null) classes.push('active-hit');
-          if (sIdx === voice.stepIndex) classes.push('current-step');
-          const label = chord ? chord.join('+') : '.';
-          return `<div class="${classes.join(' ')}">${label}</div>`;
-        })
-        .join('');
+  const sig = `${snapshot.blockName}:${snapshot.generation}:${snapshot.voices.length}`;
+
+  if (sig !== renderedMatrixSignature) {
+    renderedMatrixSignature = sig;
+    patternVisualizer.innerHTML = '';
+    cachedVoiceDOMs = [];
+
+    snapshot.voices.forEach((voice, vIdx) => {
+      const card = document.createElement('div');
+      card.className = 'voice-card';
+
+      const title = document.createElement('div');
+      title.className = 'voice-title';
 
       const roleLabel = vIdx === 0 ? 'PRIMARY' : `LAYER #${vIdx}`;
-      return `
-        <div class="voice-card">
-          <div class="voice-title">
-            <span>${roleLabel} // ${escapeHtml(voice.instrument.toUpperCase())}</span>
-            <span>${voice.stepIndex + 1}/${voice.totalSteps}</span>
-          </div>
-          <div class="voice-meta">${renderVoiceBadges(voice)}</div>
-          <div class="step-grid">${cellsHtml}</div>
-        </div>
-      `;
-    })
-    .join('');
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = `${roleLabel} // ${voice.instrument.toUpperCase()}`;
 
-  patternVisualizer.innerHTML = cardsHtml;
+      const counterSpan = document.createElement('span');
+      counterSpan.textContent = `${voice.stepIndex + 1}/${voice.totalSteps}`;
+
+      title.appendChild(nameSpan);
+      title.appendChild(counterSpan);
+
+      const meta = document.createElement('div');
+      meta.className = 'voice-meta';
+      meta.innerHTML = renderVoiceBadges(voice);
+
+      const grid = document.createElement('div');
+      grid.className = 'step-grid';
+
+      const cells: HTMLDivElement[] = [];
+      voice.pattern.forEach((chord) => {
+        const cell = document.createElement('div');
+        cell.className = chord !== null ? 'step-cell active-hit' : 'step-cell';
+        cell.textContent = chord ? chord.join('+') : '.';
+        grid.appendChild(cell);
+        cells.push(cell);
+      });
+
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(grid);
+      patternVisualizer.appendChild(card);
+
+      cachedVoiceDOMs.push({
+        counterEl: counterSpan,
+        cells,
+        lastActiveIdx: -1
+      });
+    });
+  }
+
+  // Fast O(voices) class toggle on existing DOM nodes
+  snapshot.voices.forEach((voice, vIdx) => {
+    const dom = cachedVoiceDOMs[vIdx];
+    if (!dom) return;
+
+    dom.counterEl.textContent = `${voice.stepIndex + 1}/${voice.totalSteps}`;
+
+    if (dom.lastActiveIdx !== voice.stepIndex) {
+      if (dom.lastActiveIdx >= 0 && dom.cells[dom.lastActiveIdx]) {
+        dom.cells[dom.lastActiveIdx].classList.remove('current-step');
+      }
+      if (dom.cells[voice.stepIndex]) {
+        dom.cells[voice.stepIndex].classList.add('current-step');
+      }
+      dom.lastActiveIdx = voice.stepIndex;
+    }
+  });
 }
 
 const audioEngine = new AudioEngine();
@@ -374,41 +465,62 @@ const scheduler = new TransportScheduler(audioEngine, {
     statusBlock.textContent = '--';
     statusMeter.textContent = '--';
     statusStep.textContent = '0/0';
+    drawIdleOscilloscope();
     logToTerminal('Transport stopped.', 'info');
   }
 });
 
-function renderOscilloscope(): void {
+function drawIdleOscilloscope(): void {
   const width = scopeCanvas.width;
   const height = scopeCanvas.height;
   scopeCtx.fillStyle = '#070402';
   scopeCtx.fillRect(0, 0, width, height);
 
-  scopeCtx.strokeStyle = '#26150b';
-  scopeCtx.lineWidth = 1;
+  scopeCtx.strokeStyle = '#54321e';
+  scopeCtx.lineWidth = 1.2;
   scopeCtx.beginPath();
   scopeCtx.moveTo(0, height / 2);
   scopeCtx.lineTo(width, height / 2);
   scopeCtx.stroke();
+}
 
-  const values = audioEngine.getWaveformValues();
-  scopeCtx.strokeStyle = scheduler.running ? '#ff6b35' : '#54321e';
-  scopeCtx.lineWidth = 1.6;
-  scopeCtx.beginPath();
+let lastScopeFrameTime = 0;
 
-  const sliceWidth = width / values.length;
-  let x = 0;
-  for (let i = 0; i < values.length; i++) {
-    const v = Math.max(-1, Math.min(1, values[i]));
-    const y = ((1 - v) * height) / 2;
-    if (i === 0) {
-      scopeCtx.moveTo(x, y);
-    } else {
-      scopeCtx.lineTo(x, y);
+function renderOscilloscope(timestamp: number): void {
+  // Only sample and draw waveform at ~30 FPS while transport is running
+  if (scheduler.running && timestamp - lastScopeFrameTime >= 32) {
+    lastScopeFrameTime = timestamp;
+    const width = scopeCanvas.width;
+    const height = scopeCanvas.height;
+    scopeCtx.fillStyle = '#070402';
+    scopeCtx.fillRect(0, 0, width, height);
+
+    scopeCtx.strokeStyle = '#26150b';
+    scopeCtx.lineWidth = 1;
+    scopeCtx.beginPath();
+    scopeCtx.moveTo(0, height / 2);
+    scopeCtx.lineTo(width, height / 2);
+    scopeCtx.stroke();
+
+    const values = audioEngine.getWaveformValues();
+    scopeCtx.strokeStyle = '#ff6b35';
+    scopeCtx.lineWidth = 1.6;
+    scopeCtx.beginPath();
+
+    const sliceWidth = width / values.length;
+    let x = 0;
+    for (let i = 0; i < values.length; i++) {
+      const v = Math.max(-1, Math.min(1, values[i]));
+      const y = ((1 - v) * height) / 2;
+      if (i === 0) {
+        scopeCtx.moveTo(x, y);
+      } else {
+        scopeCtx.lineTo(x, y);
+      }
+      x += sliceWidth;
     }
-    x += sliceWidth;
+    scopeCtx.stroke();
   }
-  scopeCtx.stroke();
 
   requestAnimationFrame(renderOscilloscope);
 }
@@ -419,6 +531,7 @@ async function evaluateAndPlay(forceRestart: boolean): Promise<void> {
     const ast = parseDSL(source);
 
     currentErrorLine = null;
+    renderedMatrixSignature = ''; // Force matrix DOM refresh on evaluate
     updateEditorView();
 
     statusBpm.textContent = String(ast.playback.tempo);
@@ -427,7 +540,7 @@ async function evaluateAndPlay(forceRestart: boolean): Promise<void> {
       await scheduler.start(ast);
       statusState.textContent = 'RUNNING';
       statusState.classList.add('state-running');
-      renderSequenceQueue(scheduler.getExpandedQueue(), 0);
+      renderSequenceQueue(scheduler.getExpandedQueue(), 0, true);
       logToTerminal(
         `AST compiled (BPM: ${ast.playback.tempo}, queue length: ${
           scheduler.getExpandedQueue().length
@@ -436,7 +549,7 @@ async function evaluateAndPlay(forceRestart: boolean): Promise<void> {
       );
     } else {
       scheduler.loadAST(ast);
-      renderSequenceQueue(scheduler.getExpandedQueue(), 0);
+      renderSequenceQueue(scheduler.getExpandedQueue(), 0, true);
       logToTerminal(
         `Hot-reloaded AST on the fly (BPM: ${ast.playback.tempo}).`,
         'success'
@@ -472,9 +585,9 @@ function exportProjectFile(): void {
   logToTerminal(`Exported project to "${link.download}".`, 'success');
 }
 
-// Always boot with the clean Empty Starter Project
 codeInput.value = PRESETS.empty;
 updateEditorView();
+drawIdleOscilloscope();
 requestAnimationFrame(renderOscilloscope);
 
 codeInput.addEventListener('input', () => {
@@ -549,6 +662,6 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 });
 
 logToTerminal(
-  'MODULO v0.3.0 ready. Empty starter project loaded. Select a preset or press [ PLAY ].',
+  'MODULO v0.3.1 (Optimized DSP & DOM Engine) ready. Select a preset or press [ PLAY ].',
   'info'
 );
