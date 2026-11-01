@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MODULO // Algorithmic Music Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div class="scanlines"></div>
+
+  <div class="terminal-app">
+    <!-- TOP BAR -->
+    <header class="top-bar">
+      <div class="brand">
+        <span class="prompt-symbol">>_</span>
+        <span class="brand-title">MODULO</span>
+        <span class="brand-tag">v0.3.0 // ALGORITHMIC_DSL</span>
+      </div>
+
+      <div class="transport-controls">
+        <button id="btn-play" class="btn btn-primary" title="Start or Restart Playback">
+          [ ▶ PLAY ]
+        </button>
+        <button id="btn-eval" class="btn" title="Hot-Reload Code on the Fly (Ctrl+Enter)">
+          [ ↻ EVALUATE ]
+        </button>
+        <button id="btn-stop" class="btn" title="Stop Transport (Ctrl+.)">
+          [ ■ STOP ]
+        </button>
+
+        <select id="preset-select" class="preset-select" title="Load Template or Preset">
+          <option value="empty" selected>00 // Empty Starter Project</option>
+          <option value="euclid_fx">01 // Euclidean 7/8 & Layer FX</option>
+          <option value="automata">02 // Wolfram Rule 30 Automata</option>
+          <option value="polyrhythm">03 // Modulo & Prime Polyrhythm</option>
+          <option value="fibonacci">04 // Fibonacci Space Dub (5/4)</option>
+        </select>
+      </div>
+
+      <div class="utility-controls">
+        <button id="btn-docs" class="btn">[ ? MANUAL ]</button>
+        <button id="btn-export" class="btn">[ ↓ EXPORT .MOD ]</button>
+        <a
+          href="https://github.com/akhmetov-daniil/modulo"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="btn btn-link"
+        >
+          [ ↗ GITHUB ]
+        </a>
+      </div>
+    </header>
+
+    <!-- MAIN WORKSPACE -->
+    <main class="workspace">
+      <div class="editor-wrapper">
+        <div id="line-numbers" class="line-numbers">1</div>
+        <div class="code-stage">
+          <pre id="code-highlight" class="code-highlight" aria-hidden="true"></pre>
+          <textarea
+            id="code-input"
+            class="code-input"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+            autocorrect="off"
+          ></textarea>
+        </div>
+      </div>
+
+      <!-- RIGHT INSPECTOR PANEL -->
+      <aside class="inspector-panel">
+        <div class="panel-header">OSCILLOSCOPE // MASTER_OUT</div>
+        <div class="scope-box">
+          <canvas id="scope-canvas" width="300" height="72"></canvas>
+        </div>
+
+        <div class="panel-header">ACTIVE_MATRIX // STEP_GRID</div>
+        <div id="pattern-visualizer" class="pattern-visualizer">
+          <div class="empty-state">Transport idle. Press [ PLAY ] or Ctrl+Enter.</div>
+        </div>
+
+        <div class="panel-header">SEQUENCE_QUEUE</div>
+        <div id="sequence-visualizer" class="sequence-visualizer">
+          <div class="empty-state">No active queue.</div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- BOTTOM STATUS & CONSOLE -->
+    <footer class="bottom-bar">
+      <div class="status-strip">
+        <div class="status-item">
+          <span class="label">STATE:</span>
+          <span id="status-state" class="value state-stopped">STOPPED</span>
+        </div>
+        <div class="status-item">
+          <span class="label">BPM:</span>
+          <span id="status-bpm" class="value">110</span>
+        </div>
+        <div class="status-item">
+          <span class="label">BLOCK:</span>
+          <span id="status-block" class="value">--</span>
+        </div>
+        <div class="status-item">
+          <span class="label">METER:</span>
+          <span id="status-meter" class="value">--</span>
+        </div>
+        <div class="status-item">
+          <span class="label">STEP:</span>
+          <span id="status-step" class="value">0/0</span>
+        </div>
+        <div class="status-item">
+          <span class="label">GEN:</span>
+          <span id="status-gen" class="value">0</span>
+        </div>
+        <div class="status-item shortcut-hint">
+          <span>[Ctrl+Enter] Evaluate  |  [Ctrl+.] Stop</span>
+        </div>
+      </div>
+
+      <div id="terminal-console" class="terminal-console"></div>
+    </footer>
+  </div>
+
+  <!-- DOCUMENTATION MODAL -->
+  <div id="docs-modal" class="modal-backdrop hidden">
+    <div class="modal-window">
+      <div class="modal-header">
+        <span>MODULO v0.3.0 // COMPLETE REFERENCE MANUAL & DSP GUIDE</span>
+        <button id="btn-close-docs" class="btn btn-small">[ ✕ CLOSE ]</button>
+      </div>
+      <div class="modal-body">
+        <section class="doc-section">
+          <h3>1. Core Concept & Signal Architecture</h3>
+          <p>
+            <strong>MODULO</strong> is a terminal-based algorithmic music environment. A program consists of one global <code>$playback</code> block that controls the master clock and block queue, and one or more <code>block [name]</code> definitions. Each block has its own time signature (<code>meter</code>), a primary voice, and up to 7 parallel <code>layer</code> voices. Every voice has its own dedicated DSP channel strip (Gain, Stereo Pan, Distortion, Chorus, Delay, and Reverb).
+          </p>
+        </section>
+
+        <section class="doc-section">
+          <h3>2. Global <code>$playback</code> Configuration</h3>
+          <pre class="doc-code">$playback {
+  tempo: 118                           // Master tempo in BPM (30..300)
+  swing: 0.08                          // Subdivision swing (0.0..0.5)
+  sequence: [intro, groove * 4, outro] // Playback queue (* N repeats block N bars)
+  loop: true                           // Loop entire queue continuously (true | false)
+  repeat: 1                            // Global multiplier applied to all sequence items
+}</pre>
+        </section>
+
+        <section class="doc-section">
+          <h3>3. Block Primary Voice & Multi-Layer FX Routing</h3>
+          <p>
+            You can set mix and DSP effect parameters directly on the block for its primary voice, and attach inline pipe modifiers (<code>| key: value, ...</code>) to every <code>layer</code> independently:
+          </p>
+          <pre class="doc-code">block cyber_math {
+  meter: 7/8
+  instrument: "sawtooth"
+  gain: 0.75
+  pan: -0.35
+  reverb: 0.45
+  delay: 0.30
+  distortion: 0.25
+  chorus: 0.40
+  play: euclid(5, 8, 1) on "c3 g3 a#3 d4"
+
+  // Parallel layers with independent gain, pan, and FX:
+  layer: "kick"  | euclid(2, 7) on "c1"          | gain: 1.15, dist: 0.4
+  layer: "snare" | euclid(2, 7, 3) on "c2"       | gain: 0.85, reverb: 0.35
+  layer: "hat"   | prime(14) on "c5"             | gain: 0.45, pan: 0.6, delay: 0.4
+  layer: "fm"    | modulo(14, 3, 1) on "g4+d5"   | gain: 0.6, pan: 0.4, chorus: 0.6, reverb: 0.7
+}</pre>
+        </section>
+
+        <section class="doc-section">
+          <h3>4. Available Synthesized Instruments (8 Timbres)</h3>
+          <ul>
+            <li><code>"sine"</code> — Pure fundamental sub/melodic sine oscillator.</li>
+            <li><code>"triangle"</code> — Warm, hollow low-harmonic lead or bass wave.</li>
+            <li><code>"sawtooth"</code> — Bright harmonic-rich synth brass/lead wave.</li>
+            <li><code>"square"</code> — Woody odd-harmonic chiptune / hollow synth wave.</li>
+            <li><code>"fm"</code> — Two-operator Frequency Modulation metallic/bell synthesizer.</li>
+            <li><code>"kick"</code> — Pitch-enveloped membrane bass drum (use low notes like <code>"c1"</code> or <code>"g0"</code>).</li>
+            <li><code>"snare"</code> — Pink-noise transient snare / clap synthesizer.</li>
+            <li><code>"hat"</code> — Crisp high-frequency metallic white-noise hi-hat.</li>
+          </ul>
+        </section>
+
+        <section class="doc-section">
+          <h3>5. Mix & DSP Effects Parameters (Primary & Layer)</h3>
+          <ul>
+            <li><code>gain: 0.05..1.5</code> — Output amplitude multiplier (default <code>0.85</code>).</li>
+            <li><code>pan: -1.0..1.0</code> — Stereo panorama: <code>-1.0</code> hard left, <code>0.0</code> center, <code>1.0</code> hard right.</li>
+            <li><code>reverb: 0.0..1.0</code> — Stereo algorithmic hall reverb send amount.</li>
+            <li><code>delay: 0.0..1.0</code> — Dotted-eighth stereo ping-pong echo send amount.</li>
+            <li><code>distortion: 0.0..1.0</code> (or alias <code>dist</code>) — Waveshaper overdrive saturation per voice.</li>
+            <li><code>chorus: 0.0..1.0</code> — Stereo modulated chorus widening send amount.</li>
+          </ul>
+        </section>
+
+        <section class="doc-section">
+          <h3>6. Mathematical Pattern Generators</h3>
+          <ul>
+            <li>
+              <code>seq("c3 e3 ~ g3+b3", dur: 1/8)</code> — Step sequence. Supports rests (<code>~</code> or <code>.</code>) and polyphonic chords joined with <code>+</code> (e.g. <code>c3+d#3+g3+a#3</code>).
+            </li>
+            <li>
+              <code>euclid(k, n, rot?) on "notes"</code> — <strong>Bjorklund Euclidean algorithm</strong>. Distributes <code>k</code> pulses across <code>n</code> steps with optional phase rotation <code>rot</code>.
+            </li>
+            <li>
+              <code>modulo(steps, mod, offset?) on "notes"</code> — <strong>Modular arithmetic generator</strong>. Triggers when <code>(step + offset) mod m == 0</code> and maps note indices via modular residues.
+            </li>
+            <li>
+              <code>fibonacci(n) on "notes"</code> — <strong>Fibonacci sequence generator</strong> across <code>n</code> steps using golden-ratio-like non-periodic accents.
+            </li>
+            <li>
+              <code>cellular(rule30, n) on "notes"</code> — <strong>Wolfram 1D Cellular Automaton</strong> (<code>rule30</code>, <code>rule90</code>, <code>rule110</code>, <code>rule184</code>). Evolves to a new generation every bar.
+            </li>
+            <li>
+              <code>prime(n) on "notes"</code> — <strong>Prime number sieve</strong> across <code>n</code> subdivisions (triggers on prime steps 2, 3, 5, 7, 11, 13...).
+            </li>
+          </ul>
+        </section>
+
+        <section class="doc-section">
+          <h3>7. Live Coding Workflow & Hotkeys</h3>
+          <ul>
+            <li><code>Ctrl + Enter</code> (or <code>Cmd + Enter</code>) — Evaluate and hot-reload AST on the fly without interrupting the audio clock.</li>
+            <li><code>Ctrl + .</code> — Stop playback immediately and release all voices.</li>
+            <li><code>Tab</code> — Insert 2 spaces of indentation.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
